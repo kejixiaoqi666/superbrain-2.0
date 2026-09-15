@@ -177,3 +177,9 @@ def _build(dim, m, ef, seed, backend) -> object:
 
 # ---------- 兼容别名 ----------
 HnswIndex = VectorIndex
+
+# ---------- 完整 Agent 门面（第一版完整能力 + 多后端向量） ----------
+from .facade import SuperBrain
+from .core.llm import from_env, LLMProvider, LLMResponse
+from .core.cognition.needs import NeedType, NeedDriveSystem
+from .core.cognition.emotion import EmotionGradient, EmotionalState

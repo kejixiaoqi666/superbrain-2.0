@@ -59,11 +59,36 @@ tests/         测试（rust 与 python 实现都覆盖）+ bench.py 基准
 | HNSW 构建 1 万条 | — | ~1.4s |
 | 正确性 | — | top1 匹配真最近 ✅ |
 
+## 完整 Agent 能力（SuperBrain 内核）
+
+superbrain2 不只是向量库——已继承第一版超脑的**完整 Agent 内核**，叠加 Rust/多后端向量加速：
+
+```
+认知层   需求驱动(PSI) + 情绪动力学(心境/衰减/感染/自豪愧疚) + 神经化学 + 元认知
+记忆层   SQLite单文件 + FTS5全文 + 概念图 + 四路检索 + 遗忘-重激活 + 30天浓缩
+人格层   大五维度四通道 + 进化开关 + 一句话风格 + 关系级风格
+自主层   主动思考(想念/关心/好奇/修复) + 自主目标 + tick()
+对接层   SuperBrain门面 + 向量检索走多后端(faiss/usearch/rust)
+```
+
+```python
+from superbrain2 import SuperBrain, VectorIndex
+
+brain = SuperBrain.from_env()        # 完整 Agent（第一版全部能力）
+reply = brain.chat("你好")
+brain.remember("用户喜欢茶"); brain.recall("喜欢什么")
+brain.apply_style("可爱"); brain.dream(); brain.tick()
+
+idx = VectorIndex(dim=64, backend="auto")   # 多后端向量（记忆检索加速）
+```
+
 ## 当前阶段
 
-- ✅ Rust 内核骨架：SIMD 点积（AVX2+FMA）+ HNSW 层次图索引
-- ✅ Python 双实现回退（有 Rust 用，无则纯 Python）
-- ✅ Rust 单元测试 + Python 测试全过，基准验证 469x
+- ✅ **完整 Agent 内核已迁入**（第一版全部能力：认知/情绪/记忆/人格/自主/表达）
+- ✅ Rust 内核：SIMD 点积 + HNSW
+- ✅ **多后端向量**：faiss / usearch / rust / python 自动降级，召回可靠优先
+- ✅ 测试 + 冒烟验证完整能力
+- ⬜ 真实 embedding / PISA 强化 / 完整表达库（路线图）
 
 ## 路线图（第二版完整实现，不精简）
 
