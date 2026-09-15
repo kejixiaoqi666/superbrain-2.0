@@ -23,14 +23,24 @@ cd superbrain2 && maturin develop     # 开发安装（编译 Rust 内核）
 ```
 
 ```python
-from superbrain2 import HnswIndex, dot
+from superbrain2 import VectorIndex, dot
 
-idx = HnswIndex(dim=64, m=16, ef=32)   # dim 向量维度；m 每层连接；ef 候选集
+# 多后端向量索引：默认 auto 自动选最优（faiss → usearch → rust → python）
+idx = VectorIndex(dim=64, m=16, ef=32)
+# 也可显式指定后端：VectorIndex(dim=64, backend="faiss"/"usearch"/"rust"/"python")
 idx.add([...])                          # -> id
-r = idx.search(query_vec, k=5)          # -> [(id, 点积), ...]
+r = idx.search(query_vec, k=5)          # -> [(id, 分数), ...] 分数越大越相似
 
 s = dot(vec_a, vec_b)                   # SIMD 加速点积
 ```
+
+### 多后端（召回可靠优先）
+| 后端 | 说明 | recall@10(2000条,dim64,实测) |
+|---|---|---|
+| `faiss` | FAISS HNSW，成熟可靠 | **1.00** |
+| `usearch` | 超轻量嵌入式 | **1.00** |
+| `rust` | 自研 SIMD+HNSW | 0.90（快但召回略差）|
+| `python` | 零依赖线性扫描 | 1.00 |
 
 ## 目录
 

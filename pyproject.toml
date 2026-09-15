@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "superbrain2"
-version = "0.1.0"
+version = "0.2.0"
 description = "SuperBrain 2.0 — Rust 高性能内核升级版（PyO3 + SIMD + HNSW 向量索引）"
 readme = "README.md"
 requires-python = ">=3.10"
