@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "superbrain2"
+version = "0.1.0"
+description = "SuperBrain 2.0 — Rust 高性能内核升级版（PyO3 + SIMD + HNSW 向量索引）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.maturin]
+python-source = "python"
+module-name = "superbrain2._native"
+features = ["extension-module"]

@@ -1,0 +1,15 @@
+[package]
+name = "superbrain2"
+version = "0.1.0"
+edition = "2021"
+description = "SuperBrain 2.0 Rust 高性能内核：SIMD 点积 + HNSW 向量索引"
+
+[lib]
+name = "superbrain2"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[features]
+extension-module = ["pyo3/extension-module"]
