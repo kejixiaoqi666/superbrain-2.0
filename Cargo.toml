@@ -1,6 +1,6 @@
 [package]
 name = "superbrain2"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "SuperBrain 2.0 Rust 高性能内核：SIMD 点积 + HNSW 向量索引"
 

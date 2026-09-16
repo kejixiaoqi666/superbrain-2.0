@@ -6,9 +6,9 @@
 
 纯 Python 基线的 Rust 混合内核升级版 —— 用 **PyO3 + SIMD + HNSW** 把向量检索做到极限，同时保留「无 Rust 也照样跑」的可移植性。
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.2.0-blue)](https://github.com/kejixiaoqi666/superbrain-2.0)
+[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/kejixiaoqi666/superbrain-2.0/releases)
 [![Rust](https://img.shields.io/badge/Rust-PyO3%20%2B%20SIMD-orange)]()
-[![License](https://img.shields.io/badge/License-MIT-green)]()
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Backends](https://img.shields.io/badge/backends-faiss%20·%20usearch%20·%20rust%20·%20python-brightgreen)]()
 
 **向量检索加速 ≈ 469×** · 四后端召回全部正确 · 完整 Agent 能力
