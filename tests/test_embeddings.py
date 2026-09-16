@@ -46,7 +46,7 @@ class EnhancedQualityTest(unittest.TestCase):
         self.assertLess(s, 0.3)
 
     def test_word_order_still_works(self):
-        s = cosine(self.enh.embed("退款申请"), self.enh.embed("申请退款"))
+        s = cosine(self.enh.embed("申请退款"), self.enh.embed("退款申请"))
         self.assertGreater(s, 0.5)
 
     def test_english_case_insensitive(self):
