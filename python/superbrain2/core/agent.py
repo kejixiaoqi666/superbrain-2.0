@@ -79,6 +79,9 @@ class AgentConfig:
     artifact_upgrade_hits: int = 3   # artifact 被访问此次数后恢复完整内容（Ingestion Gate）
     compress_threshold: int = 4000   # 超过此 token 触发旧对话→摘要压缩
     humanize_output: bool = False    # 对外表达人性化（情绪口语化/卖萌）；默认关保持核心库纯粹，学习/记忆仍用原始答复
+    # 嵌入器参数（增强版：同义词归一 + 去停用词，提升检索质量；默认关=兼容旧库向量）
+    embed_enhance: bool = False
+    embed_strip_stop: bool = False
 
 
 DEFAULT_PROMPT = "你是「超脑」智能体，有内在需求、情绪和记忆，可自主行动。请用中文回答。"
@@ -95,7 +98,9 @@ class SuperBrainAgent:
         self.neurochem = NeuroChemistry()
         self.meta = Metacognition()
         self.tuner = SelfTuner() if self.config.enable_tuning else None
-        self._embedder = HashingEmbedder()
+        self._embedder = HashingEmbedder(
+            enhance=self.config.embed_enhance,
+            strip_stop=self.config.embed_strip_stop)
         # HashingEmbedder 输出已归一化 → 向量检索用点积快路径
         self.store.normalized = True
         self.distiller = Distiller()

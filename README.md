@@ -141,6 +141,9 @@ tests/         测试 + 基准（bench_real.py / verify_backends.py / smoke_full
 - [x] 完整 Agent 内核迁入（认知/情绪/记忆/人格/自主/表达）
 - [x] Rust 内核：SIMD 点积 + HNSW
 - [x] 多后端向量：faiss / usearch / rust / python 自动降级
+- [x] HashingEmbedder 增强：同义词归一 + 去停用词（`AgentConfig(embed_enhance=True)`），
+      零依赖突破部分同义词天花板（卡顿↔不稳定、开通↔启用），默认关=兼容旧库向量；
+      附 `tests/test_embeddings.py` 质量回归
 - [ ] 真实 embedding 模型（替换 HashingEmbedder，可插拔）
 - [ ] 完整 PISA / DSL schema 演化
 - [ ] 完整人性化表达元素库

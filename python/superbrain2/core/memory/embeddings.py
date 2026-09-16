@@ -57,14 +57,53 @@ class HashingEmbedder:
 
     关键：用 blake2b 哈希而非 Python 内置 hash()（后者有进程级随机化，
     同一文本不同进程嵌入不同，会导致记忆检索失效）。
+
+    增强（可选，sync 时用增强词汇归一）：同义词归一到原型 token 再哈希，
+    能在零依赖下突破部分"零字面重叠的同义词"天花板（如 卡顿↔不稳定）。
+    strip_stop=True 时去掉中文高频虚词，减干扰。默认关闭以保持旧库向量一致。
     """
 
-    def __init__(self, dim: int = 256, ngram: int = 2) -> None:
+    _SYNONYMS = {
+        "卡顿": ["卡顿", "不稳定", "很卡", "很慢", "慢", "延迟高", "卡死"],
+        "查询": ["查", "查询", "查看", "查一下", "看看", "检索", "搜索"],
+        "重启": ["重启", "重新启动", "重起", "reboot", "重启一下"],
+        "启用": ["启用", "开通", "开启", "打开", "开启新"],
+        "节点": ["节点", "服务器", "机器", "服务节点", "服务端"],
+        "连接": ["连", "连接", "联网", "连上", "接入"],
+        "失败": ["失败", "没成功", "上不去", "连不上", "不行", "挂了",
+                 "出问题", "故障", "报错", "异常"],
+        "退款": ["退款", "退单", "退回", "退钱", "撤销订单", "取消订单",
+                "撤销购买", "退费"],
+        "路由": ["路由", "线路", "转发规则", "转发", "代理规则", "新线路",
+                "新节点", "通道", "入口"],
+        "状态": ["状态", "情况", "状况", "运行情况", "health", "运行状态",
+                "运行状况"],
+    }
+    _STOPWORDS = set("的了在是和你我他与它都也还不就从很能会把被对等但并且因为所以于是着过或又及既且然而")
+
+    def __init__(self, dim: int = 256, ngram: int = 2,
+                 enhance: bool = False, strip_stop: bool = False) -> None:
         self.dim = dim
         self.ngram = ngram
+        self.enhance = enhance      # 默认 False=兼容旧库；True 用同义归一词典
+        self.strip_stop = strip_stop  # 去掉中文高频虚词
+        self.model = "hashing"
+        self.revision = "v2-enhanced" if enhance else "v1"
+        if enhance:
+            self._fwd = {f: p for p, forms in self._SYNONYMS.items()
+                         for f in forms}
+
+    def _normalize(self, text: str) -> str:
+        t = text.lower()
+        if self.enhance:
+            for f, p in self._fwd.items():
+                t = t.replace(f, p)
+        if self.strip_stop:
+            t = "".join(ch for ch in t if ch not in self._STOPWORDS)
+        return t
 
     def _grams(self, text: str) -> List[str]:
-        t = "".join(text.lower().split())
+        t = "".join(self._normalize(text).split())
         if not t:
             return []
         if len(t) <= self.ngram:
