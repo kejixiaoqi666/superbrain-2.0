@@ -96,8 +96,10 @@ class _FaissBackend:
         import numpy as np
         self._idx.hnsw.efSearch = max(ef, k)
         D, I = self._idx.search(np.asarray([list(q)], dtype=np.float32), k)
-        res = [(int(I[0][j]), float(D[0][j])) for j in range(k) if I[0][j] != -1]
-        res.sort(key=lambda t: t[1], reverse=True)   # 保证接口一致：分数降序
+        # 关键：faiss 默认 IP 度量，返回的 D 是「距离」（自身 D=0，越小越相似）。
+        # 不能用 reverse=True 当相似度降序排（那会把最不相似的排最前）。
+        # 距离升序 = 相似降序，直接按 faiss 返回顺序，score = 1-D（对齐 usearch/python 的相似度语义）。
+        res = [(int(I[0][j]), float(1.0 - D[0][j])) for j in range(k) if I[0][j] != -1]
         return res
 
     def __len__(self):
