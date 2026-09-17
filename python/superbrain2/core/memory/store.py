@@ -368,6 +368,53 @@ class MemoryStore:
         """Read a persisted extension state value."""
         return self._get_meta(key)
 
+    # ---------- 嵌入器指纹 / 语义漂移守卫 / 重嵌入迁移 ----------
+
+    def embedder_fp(self) -> Optional[str]:
+        """存储里记录的嵌入器指纹（首次写入时打标；None=新库或旧库未打标）。"""
+        return self._get_meta("embedder_fp")
+
+    def mark_embedder(self, fp: str) -> None:
+        """打上当前嵌入器指纹（在写入任意记忆前调用）。"""
+        self._set_meta("embedder_fp", fp)
+
+    def embedder_compat(self, fp: str) -> str:
+        """语义漂移守卫：当前嵌入器指纹与库内已存向量是否可比。
+
+        返回：
+          'ok'          库内无向量 / 指纹一致 → 可直接检索
+          'needs_reembed' 指纹不同 → 已有向量与新嵌入器不可比，必须 reembed_all
+        """
+        if self.count_nodes() == 0:
+            return "ok"
+        stored = self.embedder_fp()
+        if stored is None:
+            # 旧库从未打标：无法确认兼容 → 保守要求重嵌入，绝不静默混算
+            return "needs_reembed"
+        return "ok" if stored == fp else "needs_reembed"
+
+    def reembed_all(self, embed_fn) -> int:
+        """用新嵌入器为全部节点重算向量（迁移/修语义漂移）。
+
+        embed_fn(text) -> List[float]。单事务提交，返回重嵌入的节点数。
+        完成后由调用方(agent)按新指纹打标 embedder_fp。
+        """
+        nodes = self.all_nodes()
+        updated = 0
+        with self.transaction():
+            for n in nodes:
+                vec = embed_fn(n.content)
+                if not vec:
+                    continue
+                blob = _pack_vec(vec)
+                self.conn.execute(
+                    "UPDATE nodes SET embedding=? WHERE node_id=?",
+                    (sqlite3.Binary(blob), n.node_id),
+                )
+                self._vec_cache[n.node_id] = (blob, list(vec))
+                updated += 1
+        return updated
+
     def set_watermark(self, device: str, seq: int) -> None:
         self._set_meta(f"sync_watermark_{device}", str(seq))
 

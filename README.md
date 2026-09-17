@@ -78,6 +78,27 @@ print(idx.impl)                                      # -> 当前后端
 
 ---
 
+## 🎯 真实 Embedding 模型（可插拔，突破同义词天花板）
+
+默认哈希嵌入零依赖但召回不到**零字面重叠的同义词**（卡顿↔延迟高、开通↔启用）。
+可插拔接入 ONNX BGE 中文语义模型（`bge-base-zh-v1.5`，768 维，约 407 MB），
+**脱离架构单独安装**，不改默认行为：
+
+```bash
+pip install onnxruntime tokenizers
+python -m superbrain2 install-model      # 从开源仓库 GitHub Release 下载模型
+```
+
+```python
+from superbrain2 import AgentConfig
+cfg = AgentConfig(embedder="bge")        # 切到真实语义模型
+```
+
+内置**语义漂移守卫**：换嵌入器后旧向量不可比，`ensure_embedder_ready()` 自动
+全量重嵌入修复。实测同义词 cos 从 0.21 → **0.87**。详见 [docs/EMBEDDER.md](docs/EMBEDDER.md)。
+
+---
+
 ## 🧠 完整 Agent 内核（第一版全部能力）
 
 SuperBrain 2.0 **不只是向量库** —— 它继承了完整的自主 Agent 架构：
@@ -144,7 +165,9 @@ tests/         测试 + 基准（bench_real.py / verify_backends.py / smoke_full
 - [x] HashingEmbedder 增强：同义词归一 + 去停用词（`AgentConfig(embed_enhance=True)`），
       零依赖突破部分同义词天花板（卡顿↔不稳定、开通↔启用），默认关=兼容旧库向量；
       附 `tests/test_embeddings.py` 质量回归
-- [ ] 真实 embedding 模型（替换 HashingEmbedder，可插拔）
+- [x] 真实 embedding 模型（可插拔，替换 HashingEmbedder）：`build_embedder("bge")` 接入
+      ONNX BGE 中文语义模型（脱离架构单独安装，`python -m superbrain2 install-model`
+      从开源仓库 GitHub Release 下载）；含语义漂移守卫 + 重嵌入迁移。详见 [docs/EMBEDDER.md](docs/EMBEDDER.md)
 - [ ] 完整 PISA / DSL schema 演化
 - [ ] 完整人性化表达元素库
 - [ ] 记忆生命周期 / 人格 / 认知机制全量移植到 Rust 内核

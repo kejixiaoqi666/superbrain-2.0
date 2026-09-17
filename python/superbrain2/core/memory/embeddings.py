@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import math
-from typing import List, Protocol
+import os
+from typing import List, Optional, Protocol
 
 
 def cosine(a: List[float], b: List[float]) -> float:
@@ -117,3 +118,133 @@ class HashingEmbedder:
             vec[h % self.dim] += 1.0 if (h >> 32) & 1 else -1.0
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0
         return [v / norm for v in vec]
+
+
+# ---------------------------------------------------------------------------
+# 真实 embedding 模型（可插拔）—— 脱离架构单独安装
+# ---------------------------------------------------------------------------
+# 设计原则：
+#   * HashingEmbedder 仍是零依赖默认，真实模型是「装了才生效」的可选组件，
+#     因此 onnxruntime / tokenizers 等重依赖不在此文件顶层 import（懒加载），
+#     缺依赖 / 缺模型时给出安装渠道提示而非让整个内核 import 失败。
+#   * 藏着「语义漂移」守卫：嵌入器身份(指纹)一旦变化，已有记忆向量即不可比，
+#     存储层必须用 embedder_identity 握手 + reembed_all 迁移修复，绝不静默混算。
+
+
+class EmbeddingInstallRequired(RuntimeError):
+    """真实嵌入模型或其运行依赖缺失。携带清晰的安装指引。"""
+
+    def __init__(self, hint: str, *args) -> None:
+        self.hint = hint
+        super().__init__(hint + "\n" + HELP_TEXT)
+
+
+HELP_TEXT = (
+    "\n安装渠道（脱离架构单独安装，默认哈希嵌入不受影响）：\n"
+    "  1) 装运行依赖：pip install onnxruntime tokenizers\n"
+    "  2) 下载模型：python -m superbrain2 install-model   # 从开源仓库 GitHub Release 拉取\n"
+    "     # 或指定：SUPERBRAIN_EMBEDDER_MODEL_DIR=/path python -m superbrain2 install-model\n"
+    "  3) 接线使用：EmbedderConfig(embedder='bge') 或环境变量 SUPERBRAIN_EMBEDDER=bge\n"
+    "完整说明见 docs/EMBEDDER.md"
+)
+
+
+class OnnxEmbedder:
+    """ONNX Runtime 中文语义嵌入器（BGE 系，默认 bge-base-zh-v1.5，768 维，~380MB）。
+
+    懒加载：构造不碰任何重依赖；首次 embed 时才 import onnxruntime/tokenizers 并
+    加载模型文件。`.model`/.`dim`/.`revision`/.`normalized` 供 embedder_identity 指纹握手。
+
+    BGE 官方 pooling：sentence_embedding = last_hidden_state[:, 0]（[CLS] 位），
+    然后 L2 归一化（与 HashingEmbedder 一致 → 检索可用点积快路径）。
+    """
+
+    def __init__(self, model_dir: Optional[str] = None,
+                 revision: Optional[str] = "bge-base-zh-v1.5-r1",
+                 max_length: int = 512, dim: int = 768) -> None:
+        self._model_dir = model_dir or _default_model_dir()
+        self.revision = revision or "bge-base-zh-v1.5-r1"
+        self.max_length = max_length
+        self.dim = dim
+        self.model = self.revision.split("-r")[0]      # 指纹里的可读模型名
+        self.normalized = True
+        self._session = None                      # 懒加载缓存
+        self._tok = None
+
+    # -- 常量/路径 ----------------------------------------------------------
+    def require_files(self) -> List[str]:
+        """列出模型目录必须存在的文件；缺失文件集合用于给出精确错误。"""
+        return [os.path.join(self._model_dir, f)
+                for f in ("model.onnx", "tokenizer.json")]
+
+    # -- 懒加载 -------------------------------------------------------------
+    def _ensure_loaded(self):
+        if self._session is not None:
+            return
+        miss = [f for f in self.require_files() if not os.path.exists(f)]
+        if miss:
+            raise EmbeddingInstallRequired(
+                "缺少模型文件: " + ", ".join(os.path.basename(m) for m in miss))
+        try:
+            import onnxruntime  # 懒加载：重依赖不影响零依赖默认路径
+        except ImportError as e:  # pragma: no cover
+            raise EmbeddingInstallRequired("缺少 onnxruntime: " + str(e))
+        try:
+            from tokenizers import Tokenizer  # 懒加载
+        except ImportError as e:  # pragma: no cover
+            raise EmbeddingInstallRequired("缺少 tokenizers: " + str(e))
+        so = onnxruntime.SessionOptions()
+        so.intra_op_num_threads = max(1, (os.cpu_count() or 2) - 1)
+        self._session = onnxruntime.InferenceSession(
+            os.path.join(self._model_dir, "model.onnx"), so,
+            providers=["CPUExecutionProvider"])
+        self._tok = Tokenizer.from_file(os.path.join(self._model_dir, "tokenizer.json"))
+
+    def embed(self, text: str) -> List[float]:
+        self._ensure_loaded()
+        enc = self._tok.encode(str(text or ""))
+        ids = enc.ids[:self.max_length]
+        mask = [1] * len(ids)
+        seg = [0] * len(ids)
+        # 填充到 max_length（CLS 位在 index 0，需保留）
+        ids = ids + [0] * (self.max_length - len(ids))
+        mask = mask + [0] * (self.max_length - len(mask))
+        seg = seg + [0] * (self.max_length - len(seg))
+        out = self._session.run(
+            None, {"input_ids": [ids], "attention_mask": [mask],
+                   "token_type_ids": [seg]})[0]   # (1, seq, hidden) 或 (1, hidden)
+        if out.ndim == 2:                          # 部分导出归一化后的 (1,hidden)
+            vec = out[0].astype(float)
+        else:                                      # (1, seq, hidden) → BGE 用 [CLS]
+            vec = out[0, 0].astype(float)
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
+
+
+def _default_model_dir() -> str:
+    return os.environ.get(
+        "SUPERBRAIN_EMBEDDER_MODEL_DIR",
+        os.path.join(os.path.expanduser("~"), ".superbrain", "models", "bge-base-zh-v1.5"))
+
+
+_EMBEDDER_REGISTRY = {
+    "hashing": lambda **kw: HashingEmbedder(
+        dim=kw.get("dim", 256), ngram=kw.get("ngram", 2),
+        enhance=kw.get("enhance", False), strip_stop=kw.get("strip_stop", False)),
+    "bge": lambda **kw: OnnxEmbedder(
+        model_dir=kw.get("model_dir"), revision=kw.get("revision"),
+        max_length=kw.get("max_length", 512), dim=kw.get("dim", 768)),
+}
+
+
+def build_embedder(name: str = "hashing", **kwargs) -> Embedder:
+    """嵌入器注册表：hashing(默认,零依赖) / bge(真实模型,需安装)。"""
+    name = (name or "hashing").lower()
+    if name not in _EMBEDDER_REGISTRY:
+        raise ValueError(
+            f"未知嵌入器 '{name}'，可选: {', '.join(sorted(_EMBEDDER_REGISTRY))}")
+    return _EMBEDDER_REGISTRY[name](**kwargs)
+
+
+def registered_embedders() -> List[str]:
+    return sorted(_EMBEDDER_REGISTRY)

@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 
+[project.optional-dependencies]
+# 真实 embedding 模型（可插拔）的运行依赖；脱离架构单独安装，默认哈希嵌入无需它们
+embedding = ["onnxruntime>=1.16", "tokenizers>=0.15"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "superbrain2._native"

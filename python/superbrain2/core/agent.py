@@ -14,7 +14,7 @@ import json
 import logging
 import copy
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
@@ -25,7 +25,7 @@ from .cognition.neurochem import NeuroChemistry
 from .cognition.metacognition import Metacognition
 from .memory.store import MemoryStore
 from .memory.node import MemoryNode, fingerprint
-from .memory.embeddings import HashingEmbedder
+from .memory.embeddings import build_embedder, embedder_identity
 from .memory import retrieval
 
 from .memory.working import WorkingMemory
@@ -82,6 +82,11 @@ class AgentConfig:
     # 嵌入器参数（增强版：同义词归一 + 去停用词，提升检索质量；默认关=兼容旧库向量）
     embed_enhance: bool = False
     embed_strip_stop: bool = False
+    # 真实 embedding 模型（可插拔，脱离架构单独安装）：
+    #   embedder='hashing'(默认,零依赖) | 'bge'(ONNX 中文语义模型, 需 install-model + 依赖)
+    #   embedder_kwargs 透传，如 {'dim': 768} / {'model_dir': '...'} / {'enhance': True}
+    embedder: str = "hashing"
+    embedder_kwargs: dict = field(default_factory=dict)
 
 
 DEFAULT_PROMPT = "你是「超脑」智能体，有内在需求、情绪和记忆，可自主行动。请用中文回答。"
@@ -98,11 +103,12 @@ class SuperBrainAgent:
         self.neurochem = NeuroChemistry()
         self.meta = Metacognition()
         self.tuner = SelfTuner() if self.config.enable_tuning else None
-        self._embedder = HashingEmbedder(
-            enhance=self.config.embed_enhance,
-            strip_stop=self.config.embed_strip_stop)
-        # HashingEmbedder 输出已归一化 → 向量检索用点积快路径
-        self.store.normalized = True
+        _ekw = dict(self.config.embedder_kwargs)
+        _ekw.setdefault("enhance", self.config.embed_enhance)
+        _ekw.setdefault("strip_stop", self.config.embed_strip_stop)
+        self._embedder = build_embedder(self.config.embedder, **_ekw)
+        # 输出是否归一化（hashing 与 bge 均归一化）→ 决定检索用点积快路径
+        self.store.normalized = bool(getattr(self._embedder, "normalized", False))
         self.distiller = Distiller()
         self.dreamer = DreamEngine(self.store, self.distiller)
         self.tools = ToolRegistry()
@@ -244,8 +250,36 @@ class SuperBrainAgent:
         return node
 
     def _embed(self, text: str) -> List[float]:
-        """用哈希嵌入器生成向量（blake2b 特征哈希，跨进程一致）。"""
+        """用当前嵌入器生成向量（hashing 为 blake2b 特征哈希；bge 为真实语义模型）。"""
         return self._embedder.embed(text)
+
+    # ---------- 嵌入器一致性 / 语义漂移守卫 ----------
+
+    def embedder_info(self) -> dict:
+        """当前嵌入器自描述（模型/维度/版本指纹），供状态面板与调试。"""
+        try:
+            return embedder_identity(self._embedder)
+        except Exception:
+            return {"type": type(self._embedder).__name__}
+
+    def ensure_embedder_ready(self, auto_reembed: bool = True) -> dict:
+        """语义漂移守卫：校验库内向量是否与当前嵌入器可比较。
+
+        返回 {"compat": "ok"|"needs_reembed", "fingerprint": fp, "reembedded": n}。
+        若库内已有向量但嵌入器换过（维度/模型/版本变化 → 向量不可比），当
+        auto_reembed=True 时自动全量重嵌入并在完成后打上新的指纹，杜绝静默混算。
+        """
+        fp = embedder_identity(self._embedder)["fp"]
+        status = self.store.embedder_compat(fp)
+        if status == "ok":
+            self.store.mark_embedder(fp)     # 空库/新库：打标即可
+            return {"compat": "ok", "fingerprint": fp, "reembedded": 0}
+        if auto_reembed:
+            n = self.store.reembed_all(self._embedder.embed)
+            self.store.mark_embedder(fp)
+            logger.warning("嵌入器指纹变化，已重嵌入 %d 条记忆以修复语义漂移 (fp=%s)", n, fp)
+            return {"compat": "reembedded", "fingerprint": fp, "reembedded": n}
+        return {"compat": "needs_reembed", "fingerprint": fp, "reembedded": 0}
 
     # ---------- 主循环 ----------
 

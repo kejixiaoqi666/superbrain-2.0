@@ -197,6 +197,14 @@ class SuperBrain:
         """当前进化模式开关：autonomous(自主演化) 或 guided(用户主导)。"""
         return self._agent.personality.mode
 
+    def embedder_info(self) -> dict:
+        """当前记忆嵌入器自描述（模型/维度/版本指纹）。"""
+        return self._agent.embedder_info()
+
+    def ensure_embedder_ready(self, auto_reembed: bool = True) -> dict:
+        """语义漂移守卫：校验库内向量与当前嵌入器可比较，必要时自动重嵌入。"""
+        return self._agent.ensure_embedder_ready(auto_reembed=auto_reembed)
+
     def set_personality_mode(self, mode: str) -> bool:
         """设定进化模式开关：autonomous(自主演化) 或 guided(用户主导,自动通道全停)。
 
