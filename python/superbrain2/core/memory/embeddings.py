@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+from collections import OrderedDict
 from typing import List, Optional, Protocol
 
 
@@ -161,15 +162,18 @@ class OnnxEmbedder:
 
     def __init__(self, model_dir: Optional[str] = None,
                  revision: Optional[str] = "bge-base-zh-v1.5-r1",
-                 max_length: int = 512, dim: int = 768) -> None:
+                 max_length: int = 512, dim: int = 768,
+                 cache_size: int = 1024) -> None:
         self._model_dir = model_dir or _default_model_dir()
         self.revision = revision or "bge-base-zh-v1.5-r1"
         self.max_length = max_length
         self.dim = dim
+        self.cache_size = cache_size
         self.model = self.revision.split("-r")[0]      # 指纹里的可读模型名
         self.normalized = True
         self._session = None                      # 懒加载缓存
         self._tok = None
+        self._cache = OrderedDict()               # 文本 → 向量 (LRU)
 
     # -- 常量/路径 ----------------------------------------------------------
     def require_files(self) -> List[str]:
@@ -201,24 +205,74 @@ class OnnxEmbedder:
         self._tok = Tokenizer.from_file(os.path.join(self._model_dir, "tokenizer.json"))
 
     def embed(self, text: str) -> List[float]:
-        self._ensure_loaded()
-        enc = self._tok.encode(str(text or ""))
+        """单条文本向量。命中内容缓存直接返回；否则走批量内核。"""
+        text = str(text or "")
+        hit = self._cache.get(text)
+        if hit is not None:
+            return hit
+        vec = self._run_batch([text])[0]
+        self._put_cache(text, vec)
+        return vec
+
+    def embed_many(self, texts: List[str]) -> List[List[float]]:
+        """批量文本向量：一次 ONNX 推理跑完（变长打包，只 pad 到批内最大长度）。
+
+        比逐条 embed 省固定 Tokenizer 解析开销 + 更少推理调用，迁移/索引时吞吐高。
+        命中缓存的条目复用结果。
+        """
+        fresh_idx, fresh, out = [], [], {}
+        for i, t in enumerate(texts):
+            t = str(t or "")
+            hit = self._cache.get(t)
+            if hit is not None:
+                out[i] = hit
+            else:
+                fresh_idx.append(i)
+                fresh.append(t)
+        if fresh:
+            vecs = self._run_batch(fresh)
+            for idx, t, v in zip(fresh_idx, fresh, vecs):
+                out[idx] = v
+                self._put_cache(t, v)
+        return [out[i] for i in range(len(texts))]
+
+    # -- 内容缓存（确定性：同文本 → 同向量） ---------------------------------
+    def _put_cache(self, text: str, vec: List[float]) -> None:
+        if self.cache_size <= 0:
+            return
+        self._cache[text] = vec
+        self._cache.move_to_end(text)
+        while len(self._cache) > self.cache_size:
+            self._cache.popitem(last=False)
+
+    # -- 文本 → token -------------------------------------------------------
+    def _tokenize(self, text: str) -> dict:
+        enc = self._tok.encode(text)
         ids = enc.ids[:self.max_length]
-        mask = [1] * len(ids)
-        seg = [0] * len(ids)
-        # 填充到 max_length（CLS 位在 index 0，需保留）
-        ids = ids + [0] * (self.max_length - len(ids))
-        mask = mask + [0] * (self.max_length - len(mask))
-        seg = seg + [0] * (self.max_length - len(seg))
-        out = self._session.run(
-            None, {"input_ids": [ids], "attention_mask": [mask],
-                   "token_type_ids": [seg]})[0]   # (1, seq, hidden) 或 (1, hidden)
-        if out.ndim == 2:                          # 部分导出归一化后的 (1,hidden)
-            vec = out[0].astype(float)
-        else:                                      # (1, seq, hidden) → BGE 用 [CLS]
-            vec = out[0, 0].astype(float)
-        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-        return [v / norm for v in vec]
+        return {"ids": ids, "mask": [1] * len(ids), "seg": [0] * len(ids)}
+
+    # -- 批量推理内核 -------------------------------------------------------
+    def _run_batch(self, texts: List[str]) -> List[List[float]]:
+        self._ensure_loaded()
+        import numpy as np                       # 批处理才需要 numpy（惰性）
+        toks = [self._tokenize(t) for t in texts]
+        ml = max((len(t["ids"]) for t in toks), default=1) or 1
+        pad = lambda v: v + [0] * (ml - len(v))
+        ids = np.array([pad(t["ids"]) for t in toks], dtype=np.int64)
+        mask = np.array([pad(t["mask"]) for t in toks], dtype=np.int64)
+        seg = np.array([pad(t["seg"]) for t in toks], dtype=np.int64)
+        out = self._session.run(None, {"input_ids": ids, "attention_mask": mask,
+                                       "token_type_ids": seg})[0]  # (n,seq,h) 或 (n,h)
+        if out.ndim == 3:
+            pooled = out[:, 0, :]                # BGE [CLS] 位
+        else:
+            pooled = out
+        return [_l2norm(v) for v in pooled]
+
+
+def _l2norm(vec) -> List[float]:
+    norm = math.sqrt(sum(float(v) * float(v) for v in vec)) or 1.0
+    return [float(v) / norm for v in vec]
 
 
 def _default_model_dir() -> str:
@@ -233,7 +287,8 @@ _EMBEDDER_REGISTRY = {
         enhance=kw.get("enhance", False), strip_stop=kw.get("strip_stop", False)),
     "bge": lambda **kw: OnnxEmbedder(
         model_dir=kw.get("model_dir"), revision=kw.get("revision"),
-        max_length=kw.get("max_length", 512), dim=kw.get("dim", 768)),
+        max_length=kw.get("max_length", 512), dim=kw.get("dim", 768),
+        cache_size=kw.get("cache_size", 1024)),
 }
 
 

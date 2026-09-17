@@ -184,6 +184,30 @@ class RealModelE2ETest(unittest.TestCase):
         self.assertTrue(hits)
         self.assertIn("延迟", hits[0][0].content)
 
+    def test_embed_many_deterministic(self):
+        emb = build_embedder("bge", model_dir=REAL_MODEL_DIR, dim=768)
+        corpus = ["节点线路卡顿不稳定", "开通启用路由转发", "今天晚饭吃番茄炒蛋"]
+        singles = [emb.embed(t) for t in corpus]
+        batched = emb.embed_many(corpus)
+        self.assertEqual(len(batched), len(corpus))
+        for (s, b) in zip(singles, batched):
+            self.assertTrue(all(abs(x - y) < 1e-9 for x, y in zip(s, b)),
+                            "embed_many 结果必须与逐条 embed 完全一致")
+
+    def test_cache_hit_returns_same_and_fast(self):
+        emb = build_embedder("bge", model_dir=REAL_MODEL_DIR, dim=768)
+        t = "网络连接不稳定的排查方法"
+        v1 = emb.embed(t)
+        # 缓存命中：结果对象一致且接近零耗时
+        import time
+        t0 = time.time()
+        v2 = emb.embed_many([t])[0]
+        dt = time.time() - t0
+        self.assertLess(dt, 0.05, "缓存命中应接近零耗时")
+        self.assertTrue(all(abs(x - y) < 1e-9 for x, y in zip(v1, v2)))
+        # 同文本重复 embed 直接复用缓存对象
+        self.assertEqual(emb.embed(t), v1)
+
 
 if __name__ == "__main__":
     unittest.main()

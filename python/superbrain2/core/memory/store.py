@@ -398,6 +398,8 @@ class MemoryStore:
 
         embed_fn(text) -> List[float]。单事务提交，返回重嵌入的节点数。
         完成后由调用方(agent)按新指纹打标 embedder_fp。
+        说明：批量推理（embed_many）在单核 CPU 上对短文本无明显收益，故迁移保持逐条，
+        简单稳定；多核/GPU 部署可直接调用 embed_many 自行批量。
         """
         nodes = self.all_nodes()
         updated = 0
@@ -406,14 +408,17 @@ class MemoryStore:
                 vec = embed_fn(n.content)
                 if not vec:
                     continue
-                blob = _pack_vec(vec)
-                self.conn.execute(
-                    "UPDATE nodes SET embedding=? WHERE node_id=?",
-                    (sqlite3.Binary(blob), n.node_id),
-                )
-                self._vec_cache[n.node_id] = (blob, list(vec))
+                self._update_vec(n.node_id, vec)
                 updated += 1
         return updated
+
+    def _update_vec(self, node_id: str, vec: List[float]) -> None:
+        blob = _pack_vec(vec)
+        self.conn.execute(
+            "UPDATE nodes SET embedding=? WHERE node_id=?",
+            (sqlite3.Binary(blob), node_id),
+        )
+        self._vec_cache[node_id] = (blob, list(vec))
 
     def set_watermark(self, device: str, seq: int) -> None:
         self._set_meta(f"sync_watermark_{device}", str(seq))
