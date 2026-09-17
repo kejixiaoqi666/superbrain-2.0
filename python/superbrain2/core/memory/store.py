@@ -90,6 +90,11 @@ class MemoryStore:
         self._tx_depth = 0
         # 向量是否已归一化（HashingEmbedder 输出已归一化 → 用点积快路径）
         self.normalized = False
+        # 惰性 numpy 矩阵缓存：只在向量集变更时重建，稳态查询零数组重建开销
+        self._vec_version = 0          # 向量集变更版本号
+        self._V = None                 # np.float32 矩阵 (n, dim)，仅缓存完整时有效
+        self._V_ids: List[str] = []    # 与矩阵行对齐的 node_id
+        self._V_ver = -1               # 已构建矩阵对应的版本号
         self._node_count_cache: Optional[int] = None  # 节点数缓存（省 SQL COUNT）
         # 记忆库物理上限（护栏，默认 1GB，可配置）——配合对话浓缩机制，实际很难触达
         self.max_db_bytes: int = 1024 ** 3
@@ -173,6 +178,7 @@ class MemoryStore:
         )
         if node.embedding:
             self._vec_cache[node.node_id] = (blob, list(node.embedding))
+            self._vec_version += 1
         # 同步 FTS 全文索引
         self.conn.execute(
             "INSERT INTO nodes_fts(content, node_id) VALUES (?,?)",
@@ -419,6 +425,7 @@ class MemoryStore:
             (sqlite3.Binary(blob), node_id),
         )
         self._vec_cache[node_id] = (blob, list(vec))
+        self._vec_version += 1
 
     def set_watermark(self, device: str, seq: int) -> None:
         self._set_meta(f"sync_watermark_{device}", str(seq))
@@ -443,35 +450,32 @@ class MemoryStore:
         """
         if not query_vec:
             return []
-        scored = []
-        # 候选集：只算这些节点
         if candidate_ids is not None:
-            cand_set = set(candidate_ids)
-            for node_id in cand_set:
+            # 候选集（FTS 预筛）：小集合 → 向量化 _sim_batch
+            pairs = []
+            for node_id in set(candidate_ids):
                 vec = self._cached_vec(node_id)
-                if vec is None:
-                    continue
-                s = self._sim(query_vec, vec)
-                if s > 0.0:
-                    scored.append((node_id, s))
-        # 全量：内存缓存优先
+                if vec is not None:
+                    pairs.append((node_id, vec))
+            scored = self._sim_batch(query_vec, pairs)
+            scored = heapq.nlargest(k, scored, key=lambda t: t[1])
         elif len(self._vec_cache) >= self.count_nodes():
-            for node_id, (blob, vec) in self._vec_cache.items():
-                s = self._sim(query_vec, vec)
-                if s > 0.0:
-                    scored.append((node_id, s))
+            # 全量且缓存完整 → 惰性矩阵 + argpartition（稳态最快，零数组重建）
+            scored = self._matrix_scores(query_vec, k)
         else:
+            # 缓存未完整 → SQLite 解码 + 向量化
+            pairs = []
             rows = self.conn.execute("SELECT node_id, embedding FROM nodes").fetchall()
             for node_id, blob in rows:
                 if not blob:
                     continue
                 vec = self._decode_cached(node_id, blob)
-                s = self._sim(query_vec, vec)
-                if s > 0.0:
-                    scored.append((node_id, s))
-        # 只需 top-k：避免数千条候选的 O(n log n) 全排序。
-        # heapq.nlargest 保持与原排序相同的分数降序语义。
-        scored = heapq.nlargest(k, scored, key=lambda t: t[1])
+                if vec:
+                    pairs.append((node_id, vec))
+            scored = self._sim_batch(query_vec, pairs)
+            scored = heapq.nlargest(k, scored, key=lambda t: t[1])
+        # 只需 top-k（矩阵路径已 argpartition；候选/SQLite 路径已 heapq）
+        scored = scored[:k]
         if scored and rel_floor > 0.0:
             floor = scored[0][1] * rel_floor
             scored = [t for t in scored if t[1] >= floor]
@@ -501,6 +505,67 @@ class MemoryStore:
         if self.normalized:
             return dot_normalized(a, b)
         return cosine(a, b)
+
+    def _sim_batch(self, query_vec: List[float],
+                   pairs: List[Tuple[str, List[float]]]) -> List[Tuple[str, float]]:
+        """向量化相似度：一次 numpy 矩阵点积算全部向量（BLAS/SIMD）。
+
+        替代原来的 Python 逐向量 _sim 循环（O(N) 个 Python 内积调用）。
+        向量已归一化 → 直接 `V @ q`（点积即余弦）；否则先 L2 归一化再点积。
+        """
+        if not pairs:
+            return []
+        import numpy as np
+        ids = [p[0] for p in pairs]
+        V = np.asarray([p[1] for p in pairs], dtype=np.float32)
+        q = np.asarray(query_vec, dtype=np.float32)
+        if self.normalized:
+            scores = V @ q
+        else:
+            qn = q / (float(np.linalg.norm(q)) + 1e-9)
+            Vn = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-9)
+            scores = Vn @ qn
+        # 只保留正分（与原来 s>0.0 语义一致），按 id 对应返回
+        out = []
+        for i in range(len(ids)):
+            s = float(scores[i])
+            if s > 0.0:
+                out.append((ids[i], s))
+        return out
+
+    def _ensure_vmatrix(self) -> None:
+        """惰性构建全量向量矩阵；向量集未变更时复用缓存，避免每次查询重建数组。"""
+        if self._V is not None and self._V_ver == self._vec_version:
+            return
+        import numpy as np
+        rows, ids = [], []
+        for node_id, (blob, vec) in self._vec_cache.items():
+            if vec:
+                rows.append(vec)
+                ids.append(node_id)
+        self._V = np.asarray(rows, dtype=np.float32) if rows else np.zeros(
+            (0, 0), dtype=np.float32)
+        self._V_ids = ids
+        self._V_ver = self._vec_version
+
+    def _matrix_scores(self, query_vec: List[float], k: int) -> List[Tuple[str, float]]:
+        """用缓存矩阵算全量 top-k（numpy argpartition，稳态最快路径）。"""
+        import numpy as np
+        self._ensure_vmatrix()
+        V, ids = self._V, self._V_ids
+        if V.size == 0 or not ids:
+            return []
+        q = np.asarray(query_vec, dtype=np.float32)
+        if self.normalized:
+            scores = V @ q
+        else:
+            qn = q / (float(np.linalg.norm(q)) + 1e-9)
+            Vn = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-9)
+            scores = Vn @ qn
+        kk = min(k, len(ids))
+        idx = np.argpartition(-scores, kth=kk - 1)[:kk]
+        idx = idx[np.argsort(-scores[idx])]  # 分数降序
+        return [(ids[i], float(scores[i])) for i in idx if scores[i] > 0.0]
 
     def _cached_vec(self, node_id: str) -> Optional[List[float]]:
         """取节点向量（优先内存缓存，其次 DB）。"""
