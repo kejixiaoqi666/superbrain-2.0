@@ -140,7 +140,7 @@ class StoreSemanticDriftTest(unittest.TestCase):
 
 REAL_MODEL_DIR = os.environ.get(
     "SUPERBRAIN_EMBEDDER_MODEL_DIR",
-    "/tmp/sb_bge_verify")
+    os.path.join(os.path.expanduser("~"), ".superbrain", "models", "bge-base-zh-v1.5"))
 
 
 @unittest.skipUnless(
