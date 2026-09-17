@@ -70,6 +70,17 @@ class SuperBrain:
         """超脑对每个人的自主关系定位（相处中自主形成，非绑定标签）。"""
         return self._agent.relationships.orientations()
 
+    # ---- 经验蒸馏（大脑存知识，身体管执行）----
+    def record_experience(self, task: str, context: str = "",
+                          outcome: str = "", lesson: str = ""):
+        return self._agent.record_experience(task, context, outcome, lesson)
+
+    def distill_skill(self, name: str, procedure: str, success: bool = True):
+        return self._agent.distill_skill(name, procedure, success=success)
+
+    def best_skills(self, k: int = 5) -> list:
+        return self._agent.best_skills(k)
+
     def expression_elements(self, orientation: str = None) -> dict:
         """底层表达元素库：某关系定位下超脑可选用的言语元素（框架范围，非锁定）。
 

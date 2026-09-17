@@ -94,5 +94,34 @@ class AgentMultimodalTest(unittest.TestCase):
             store.close()
 
 
+class AgentDistillTest(unittest.TestCase):
+    def _make_agent(self):
+        from superbrain2.core.agent import AgentConfig, SuperBrainAgent
+        tmp = tempfile.mkdtemp()
+        store = MemoryStore(path=Path(tmp) / "m.db")
+        agent = SuperBrainAgent(_FakeLLM(), store=store, config=AgentConfig())
+        return agent, store
+
+    def test_record_experience(self):
+        agent, store = self._make_agent()
+        try:
+            exp = agent.record_experience("查面板", "3个节点", "都通", "用 /git status")
+            self.assertEqual(exp.task, "查面板")
+        finally:
+            store.close()
+
+    def test_distill_and_best_skills_orders_by_proficiency(self):
+        agent, store = self._make_agent()
+        try:
+            agent.distill_skill("a", "步骤A", success=True)
+            agent.distill_skill("a", "步骤A2", success=True)   # 两次成功→熟练高
+            agent.distill_skill("b", "步骤B", success=True)
+            best = agent.best_skills(2)
+            self.assertEqual(best[0].name, "a")                # a 熟练度最高排前
+            self.assertEqual(best[0].procedure, "步骤A2")
+        finally:
+            store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

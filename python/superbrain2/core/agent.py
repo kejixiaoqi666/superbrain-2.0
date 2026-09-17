@@ -36,7 +36,7 @@ from .memory.expression_guide import analyze_memory_scale, expression_guide
 from .attention import AttentionEngine, attention_block
 from .context_cleaner import clean_tool_output, clean_history_message, is_noise
 from .gwt import GlobalWorkspace
-from .memory.distill import Distiller
+from .memory.distill import Distiller, Experience
 from .memory.dream import DreamEngine
 from .memory.concept import ConceptExtractor, ConceptGraph
 from .memory import dedupe
@@ -589,6 +589,20 @@ class SuperBrainAgent:
     def recall_artifact(self, h: str) -> str:
         """恢复 artifact 完整内容（工具大输出）。"""
         return self._artifacts.get(h, "[未找到该 artifact]")
+
+    # ---- 经验蒸馏（Distiller 公开契约，供身体层调用；技能执行归身体，知识记忆归大脑）----
+    def record_experience(self, task: str, context: str = "",
+                          outcome: str = "", lesson: str = "") -> Experience:
+        """记录一次任务经验（大脑存经验记忆）。"""
+        return self.distiller.record_experience(task, context, outcome, lesson)
+
+    def distill_skill(self, name: str, procedure: str, success: bool = True):
+        """蒸馏/更新一个技能（大脑存知识；身体负责可执行形态）。"""
+        return self.distiller.distill_skill(name, procedure, success=success)
+
+    def best_skills(self, k: int = 5) -> list:
+        """熟练度最高的技能（供身体同步成可执行 SKILL.md）。"""
+        return self.distiller.best_skills(k)
 
     def dream(self, window_hours: float = 24.0) -> List[str]:
         """睡眠计算：回顾记忆 + 人格自省 + 记忆遗忘(降级非删) + 对话浓缩。"""
