@@ -57,12 +57,14 @@ class SuperBrain:
 
     # ---------- 统一接口（隐藏内部复杂性） ----------
 
-    def chat(self, message: str, person_id: str = None) -> str:
+    def chat(self, message: str, person_id: str = None,
+             images: list = None) -> str:
         """对话：认知（需求/情绪/神经化学/元认知/注意力）→ 记忆检索 → 行动。
 
         person_id 传入时，超脑随相处自主演化对该人的关系（信任/熟悉/依恋增长 + 自主重新定性）。
+        images 传入时走多模态（base64 data URL 列表，模型直接识图）。
         """
-        return self._agent.chat(message, person_id=person_id)
+        return self._agent.chat(message, person_id=person_id, images=images)
 
     def orientations(self) -> dict:
         """超脑对每个人的自主关系定位（相处中自主形成，非绑定标签）。"""

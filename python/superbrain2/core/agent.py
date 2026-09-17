@@ -40,7 +40,7 @@ from .memory.distill import Distiller
 from .memory.dream import DreamEngine
 from .memory.concept import ConceptExtractor, ConceptGraph
 from .memory import dedupe
-from .llm import LLMProvider, estimate_tokens
+from .llm import LLMProvider, _content_text, estimate_tokens, multimodal_message
 from .tools import ToolRegistry, PermissionPolicy, register_builtin_tools
 from .goals import GoalManager, Goal
 from .state import (save_state, load_state, save_state_to_store,
@@ -283,13 +283,14 @@ class SuperBrainAgent:
 
     # ---------- 主循环 ----------
 
-    def chat(self, message: str, person_id: Optional[str] = None) -> str:
+    def chat(self, message: str, person_id: Optional[str] = None,
+             images: Optional[List[str]] = None) -> str:
         # 入口防御：空/None/非 str 消息不崩、不污染会话、不调 LLM
         if message is None:
             message = ""
         elif not isinstance(message, str):
             message = str(message)
-        if not message.strip():
+        if not message.strip() and not images:
             return "嗯？（没有收到消息内容）"
         # 自主关系演化：和某人相处，信任/熟悉/依恋随交互自然成长，超脑自主重新定性（非设定、非绑定）
         self._active_rel = None
@@ -309,7 +310,10 @@ class SuperBrainAgent:
             pass
         self._stats["turns"] += 1
         self._last_message = message
-        self._conversation.append({"role": "user", "content": message})
+        # 多模态：有图则 user content 用 list（text + image_url 片段），否则纯文本
+        user_content = multimodal_message(message, list(images))["content"] \
+            if images else message
+        self._conversation.append({"role": "user", "content": user_content})
 
         # 0. 记录事件日志（溯源基础）+ 工作记忆
         try:
@@ -1045,7 +1049,25 @@ class SuperBrainAgent:
                 used = 0
         for m in reversed(self._conversation):
             role = m.get("role", "user")
-            content = clean_history_message(m["content"], role)
+            raw = m["content"]
+            # 多模态消息：文本部分走清洗，图片片段原样保留（图仍喂给模型）
+            if isinstance(raw, list):
+                txt = _content_text(raw)
+                imgs = [p for p in raw if isinstance(p, dict)
+                        and p.get("type") == "image_url"]
+                clean = clean_history_message(txt, role) if txt else ""
+                if clean is None or (txt and is_noise(clean)):
+                    clean = ""
+                parts = ([{"type": "text", "text": clean}] if clean else []) + imgs
+                if not parts:
+                    continue
+                t = estimate_tokens(clean) if clean else 0
+                if used + t > budget:
+                    break
+                out.append({"role": role, "content": parts})
+                used += t
+                continue
+            content = clean_history_message(raw, role)
             if content is None or is_noise(content):
                 continue  # 纯噪声丢弃，不占预算
             t = estimate_tokens(content)
@@ -1073,7 +1095,10 @@ class SuperBrainAgent:
         参照 Hermes 的滚动摘要压缩：旧对话→LLM归纳成摘要，新对话→原始。
         避免所有对话全量上传，同时保留关键语义。
         """
-        total = sum(estimate_tokens(m["content"]) for m in self._conversation)
+        total = sum(estimate_tokens(_content_text(m["content"]))
+                    for m in self._conversation
+                    if isinstance(m.get("content"), str) or isinstance(
+                        m.get("content"), list))
         if total <= self.config.compress_threshold:
             return
         import time as _time

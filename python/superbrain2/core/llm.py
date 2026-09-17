@@ -100,3 +100,33 @@ def estimate_tokens(text: str) -> int:
     """粗略估算 token 数（中文≈1，英文≈4字符1个）。"""
     cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
     return int(cjk + (len(text) - cjk) / 4)
+
+
+def _content_text(content) -> str:
+    """从消息 content 取纯文本（兼容多模态 list）。"""
+    if isinstance(content, list):
+        return " ".join(p.get("text", "") for p in content
+                        if isinstance(p, dict) and p.get("type") == "text")
+    return content or ""
+
+
+def image_content_part(data_url: str) -> dict:
+    """构造 OpenAI 兼容的多模态图片片段（base64 data URL）。"""
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def multimodal_message(text: str, image_data_urls: List[str]) -> dict:
+    """构造带图的多模态 user 消息：text + 若干 image_url 片段。"""
+    parts: List[dict] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+    for u in image_data_urls:
+        parts.append(image_content_part(u))
+    return {"role": "user", "content": parts}
+
+
+def to_data_url(image_bytes: bytes, mime: str = "image/png") -> str:
+    """图片字节 → base64 data URL（直接喂模型，无需上传/OCR）。"""
+    import base64
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime};base64,{b64}"
