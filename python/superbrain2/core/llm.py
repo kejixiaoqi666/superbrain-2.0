@@ -54,10 +54,6 @@ class LLMProvider:
 
     def chat(self, messages: List[Dict], tools: Optional[List[Dict]] = None,
              max_tokens: int = 2048) -> LLMResponse:
-        """对话，可带 tools（function calling）。
-
-        messages 支持标准角色：system/user/assistant/tool（tool 需带 tool_call_id）。
-        """
         body = {
             "model": self.model,
             "messages": messages,
@@ -92,6 +88,69 @@ class LLMProvider:
             completion_tokens=int((data.get("usage") or {}).get("completion_tokens", 0) or 0),
             total_tokens=int((data.get("usage") or {}).get("total_tokens", 0) or 0),
         )
+
+    def chat_stream(self, messages: List[Dict], tools: Optional[List[Dict]] = None,
+                    max_tokens: int = 2048):
+        """真·分块流式对话：逐 token yield 文本增量（用 http.client 增量读，不整体缓冲）。
+
+        关键：urllib 会整体缓冲 SSE 响应 → 首字要等全量生成完(假流式)。
+        本方法用 http.client 逐行读 socket，chunked 数据一到即 yield → 首字秒显(同 Hermes)。
+
+        产出 (kind, data)：("text", 增量) / ("done", 全文) / ("error", 信息)。
+        """
+        import http.client
+        from urllib.parse import urlparse
+        body = {"model": self.model, "messages": messages,
+                "temperature": self.temperature, "max_tokens": max_tokens,
+                "stream": True}
+        if tools:
+            body["tools"] = tools
+        u = urlparse(self.base_url.rstrip("/") + "/chat/completions")
+        if not u.hostname:
+            yield ("error", "无效 base_url"); return
+        conn = (http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=180)
+                if u.scheme == "https" else
+                http.client.HTTPConnection(u.hostname, u.port or 80, timeout=180))
+        text_parts: List[str] = []
+        try:
+            conn.putrequest("POST", u.path or "/", skip_accept_encoding=True)
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Authorization", f"Bearer {self.api_key}")
+            conn.putheader("Accept", "text/event-stream")
+            conn.endheaders()
+            conn.send(json.dumps(body).encode("utf-8"))
+            resp = conn.getresponse()
+            if resp.status != 200:
+                raise RuntimeError(f"HTTP {resp.status} {resp.reason}")
+            for raw in resp.fp:            # http.client fp 分块增量读，不缓冲整体
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
+                c = delta.get("content")
+                if c:
+                    text_parts.append(c)
+                    yield ("text", c)
+        except Exception:
+            try:  # 流式失败 → 回退完整 chat() 一次给全
+                full = self.chat(messages, tools=tools, max_tokens=max_tokens)
+                if full.content:
+                    yield ("text", full.content)
+            except Exception as e2:
+                yield ("error", f"{type(e2).__name__}: {e2}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        yield ("done", "".join(text_parts))
 
 
 def from_env() -> "LLMProvider":

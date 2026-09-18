@@ -560,6 +560,43 @@ class SuperBrainAgent:
         """当轮真实 token 用量（向量压缩后喂给模型的输入）——供上游自动续接判断。"""
         return dict(self.last_usage)
 
+    def chat_stream(self, message: str, person_id: Optional[str] = None,
+                    images: Optional[List[str]] = None):
+        """精简·真流式对话：保留 persona/记忆, 免重型工具/人格块提速, 边生成边 yield。
+
+        供上层 bot 即时显示(同 Hermes 体验)。产出 (kind, data)：
+        ("text", 增量) / ("done", 全文) / ("error", 信息)。全量 chat() 仍用于任务执行。
+        """
+        from .llm import multimodal_message
+        if message is None:
+            message = ""
+        elif not isinstance(message, str):
+            message = str(message)
+        user_content = multimodal_message(message, list(images))["content"] \
+            if images else message
+        self._conversation.append({"role": "user", "content": user_content})
+        # 精简 prompt：基础身份 + 状态 + 相关记忆 + 当前消息(免重型块提速)
+        msgs = [{"role": "system", "content": self._base_prompt()},
+                {"role": "system", "content": self._state_block()}]
+        try:
+            recalled = self.recall(message)
+            mem_block = self._format_memory(recalled)
+            if mem_block:
+                msgs.append({"role": "system", "content": f"[相关记忆]\n{mem_block}"})
+        except Exception:
+            pass
+        msgs.append({"role": "user", "content": user_content})
+        acc = ""
+        for kind, data in self.llm.chat_stream(msgs):
+            if kind == "text":
+                acc += data
+                yield ("text", data)
+            elif kind == "error":
+                yield ("error", data)
+                return
+        self._conversation.append({"role": "assistant", "content": acc})
+        yield ("done", acc)
+
     def _fallback_reply(self, reason: str) -> str:
         """LLM 失败时的降级回复（不崩会话）。"""
         return (f"[服务降级] {reason}。请稍后再试，或检查模型通道配置。"
