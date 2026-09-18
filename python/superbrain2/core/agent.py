@@ -672,17 +672,33 @@ class SuperBrainAgent:
             result = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
         except Exception as e:
             return f"[错误] 工具 {tc.name} 执行失败: {e}"
-        # Ingestion-Aware Compaction：进上下文前先清洗结构噪声（TokenPilot）
+        # 真实内容型工具(exec/read_file/web_extract)：模型需要本体, 不是 JSON 摘要
+        if tool.name in ("exec", "read_file", "web_extract"):
+            try:
+                d = json.loads(result) if isinstance(result, str) else result
+            except Exception:
+                d = result
+            if isinstance(d, dict) and "output" in d:
+                content = str(d.get("output") or "")
+                code = d.get("exit_code")
+                prefix = f"[exit={code}] " if isinstance(code, int) else ""
+                content = prefix + content
+            else:
+                content = str(result)
+            cap = 12000
+            if len(content) > cap:
+                content = content[:cap] + f"\n...（已截断，共 {len(result)} 字符）"
+            return content or "[已执行，无有效输出]"
+        # 其它工具：Ingestion-Aware Compaction（TokenPilot）
         result = clean_tool_output(result)
         if not result:
             return "[已执行，无有效输出]"
-        # TokenPilot：环境消息（工具输出）默认压缩，访问频率超阈值则恢复完整
+        # TokenPilot：环境消息默认压缩，访问频率超阈值则恢复完整
         if len(result) > self.config.artifact_threshold:
             import hashlib
             h = hashlib.blake2b(result.encode("utf-8"), digest_size=8).hexdigest()
             self._artifacts[h] = result  # artifact 注册表 𝒜（content hash → 完整内容）
             self._artifact_access[h] = self._artifact_access.get(h, 0) + 1
-            # Ingestion Gate 𝔾(m)：访问频率超阈值 → 恢复完整内容交付
             if self._artifact_access[h] >= self.config.artifact_upgrade_hits:
                 return result  # 高频访问的 artifact 升级为完整内容
             summary = result[:200].replace("\n", " ")
