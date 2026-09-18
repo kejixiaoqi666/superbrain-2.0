@@ -46,7 +46,7 @@ class LLMProvider:
     """聊天补全客户端（支持 function calling）。"""
 
     def __init__(self, base_url: str, api_key: str, model: str,
-                 temperature: float = 0.7) -> None:
+                 temperature: Optional[float] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -57,9 +57,10 @@ class LLMProvider:
         body = {
             "model": self.model,
             "messages": messages,
-            "temperature": self.temperature,
             "max_tokens": max_tokens,
         }
+        if self.temperature is not None:   # claude-opus-5 拒绝 temperature
+            body["temperature"] = self.temperature
         if tools:
             body["tools"] = tools
         req = urllib.request.Request(
@@ -101,8 +102,9 @@ class LLMProvider:
         import http.client
         from urllib.parse import urlparse
         body = {"model": self.model, "messages": messages,
-                "temperature": self.temperature, "max_tokens": max_tokens,
-                "stream": True}
+                "max_tokens": max_tokens, "stream": True}
+        if self.temperature is not None:   # claude-opus-5 拒绝 temperature
+            body["temperature"] = self.temperature
         if tools:
             body["tools"] = tools
         u = urlparse(self.base_url.rstrip("/") + "/chat/completions")
