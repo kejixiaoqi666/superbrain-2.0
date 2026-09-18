@@ -66,6 +66,14 @@ class SuperBrain:
         """
         return self._agent.chat(message, person_id=person_id, images=images)
 
+    def chat_stream(self, message: str, person_id: str = None,
+                    images: list = None):
+        """对话（轻量流式：单次调用+真流式），yield ("text", 增量) 等。
+
+        保留 persona+记忆, 免重型工具/人格块提速; 供聊天机器人真流式输出。
+        """
+        return self._agent.chat_stream(message, person_id=person_id, images=images)
+
     def usage(self) -> dict:
         """当轮真实 token 用量（向量压缩后喂给模型的输入）——供上游自动续接判断。"""
         try:
