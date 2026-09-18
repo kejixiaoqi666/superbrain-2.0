@@ -197,6 +197,12 @@ class SuperBrainAgent:
         base = (self.config.system_prompt or DEFAULT_PROMPT)
         if parts:
             base += "\n" + "\n".join(parts)
+        base += (
+            "\n诚实底线：绝不捏造事实。【不得假装执行过命令、不得谎称读过本机/磁盘/硬件、"
+            "不得编造实时价格/数据/来源】。凡需要执行本机命令、读取本机硬件/文件、或获取实时外部数据"
+            "而你当前没有对应可用工具时，必须如实说'我没有该能力/未接入该数据源'，"
+            "绝不凭空给'看起来像真的'的输出。"
+        )
         self._base_cache = base
         return base
 
