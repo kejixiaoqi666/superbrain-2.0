@@ -66,6 +66,14 @@ class SuperBrain:
         """
         return self._agent.chat(message, person_id=person_id, images=images)
 
+    def usage(self) -> dict:
+        """当轮真实 token 用量（向量压缩后喂给模型的输入）——供上游自动续接判断。"""
+        try:
+            return self._agent.usage()
+        except Exception:
+            return {"prompt_tokens": 0, "completion_tokens": 0,
+                    "total_tokens": 0, "calls": 0}
+
     def orientations(self) -> dict:
         """超脑对每个人的自主关系定位（相处中自主形成，非绑定标签）。"""
         return self._agent.relationships.orientations()

@@ -140,6 +140,9 @@ class SuperBrainAgent:
         register_meme_tool(self.tools)        # 表情包搜索工具
         self._active_rel = None  # 当前对话对象的关系（person_id 时）
         self._conversation: List[Dict[str, str]] = []
+        # 当轮真实 token 用量（向量压缩后喂给模型的输入，供上游自动续接判断）
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                           "total_tokens": 0, "calls": 0}
         self._compressed_summary: str = ""   # 旧对话的滚动摘要
         self._last_compress = 0.0
         self._last_message: str = ""   # 最近一条消息（GWT 种子模块用）
@@ -514,20 +517,25 @@ class SuperBrainAgent:
                 self.remember(fact, scope="user", tier="recall")
 
     def _run_tool_loop(self, msgs: List[Dict], max_steps: int = 5) -> str:
-        """function-calling 闭环：循环直到模型给出最终回答或达到步数上限。
-
-        协议：
-        1. 带 tools 调用 LLM
-        2. 若 finish_reason=="tool_calls"，逐个执行工具，结果以 role=tool 回传
-        3. 重复，直到 stop 或无工具调用
-        """
+        """function-calling 闭环：循环直到模型给出最终回答或达到步数上限。"""
         tools = self.tools.openai_schemas() if self.tools.list() else None
+        # 当轮真实输入重置：每个逻辑轮从零计量（跨轮取 max 单次输入）
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                           "total_tokens": 0, "calls": 0}
         for _ in range(max_steps):
             try:
                 resp = self.llm.chat(msgs, tools=tools)
             except Exception as e:
                 logger.warning("LLM 调用失败: %s", e)
                 return self._fallback_reply("LLM 暂时不可用")
+            # 累计真实用量：单次输入取最大（工具输出累积后末次最大 = 最坏当轮输入）
+            pt = getattr(resp, "prompt_tokens", 0) or 0
+            ct = getattr(resp, "completion_tokens", 0) or 0
+            self.last_usage["calls"] += 1
+            self.last_usage["prompt_tokens"] = max(self.last_usage["prompt_tokens"], pt)
+            self.last_usage["completion_tokens"] += ct
+            self.last_usage["total_tokens"] = max(self.last_usage["total_tokens"],
+                                                  getattr(resp, "total_tokens", 0) or 0)
             if resp.tool_calls:
                 # 记录 assistant 的 tool_calls 消息
                 msgs.append({
@@ -547,6 +555,10 @@ class SuperBrainAgent:
                 continue
             return resp.content or ""
         return resp.content or ""
+
+    def usage(self) -> dict:
+        """当轮真实 token 用量（向量压缩后喂给模型的输入）——供上游自动续接判断。"""
+        return dict(self.last_usage)
 
     def _fallback_reply(self, reason: str) -> str:
         """LLM 失败时的降级回复（不崩会话）。"""
