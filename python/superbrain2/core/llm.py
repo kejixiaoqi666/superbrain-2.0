@@ -35,6 +35,11 @@ class LLMResponse:
     reasoning: str = ""
     finish_reason: str = "stop"
     tool_calls: List[ToolCall] = field(default_factory=list)
+    # 真实 token 用量（provider 返回的 usage）——"当轮真实输入"的权威计量源，
+    # 供上游 super-agent 判断是否自动续接新会话。缺省 0 = 提供方未返回。
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
 
 
 class LLMProvider:
@@ -83,6 +88,9 @@ class LLMProvider:
             reasoning=msg.get("reasoning_content", "") or "",
             finish_reason=choice.get("finish_reason", "stop"),
             tool_calls=tool_calls,
+            prompt_tokens=int((data.get("usage") or {}).get("prompt_tokens", 0) or 0),
+            completion_tokens=int((data.get("usage") or {}).get("completion_tokens", 0) or 0),
+            total_tokens=int((data.get("usage") or {}).get("total_tokens", 0) or 0),
         )
 
 
