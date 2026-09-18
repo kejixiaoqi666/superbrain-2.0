@@ -138,11 +138,23 @@ class LLMProvider:
                 if c:
                     text_parts.append(c)
                     yield ("text", c)
+                for tc in delta.get("tool_calls") or []:
+                    yield ("tool", tc)
+                if chunk.get("usage"):
+                    yield ("usage", chunk["usage"])
         except Exception:
             try:  # 流式失败 → 回退完整 chat() 一次给全
                 full = self.chat(messages, tools=tools, max_tokens=max_tokens)
                 if full.content:
+                    text_parts.append(full.content)
                     yield ("text", full.content)
+                for tc in full.tool_calls:
+                    yield ("tool", {"index": 0, "id": tc.id, "type": "function",
+                                    "function": {"name": tc.name,
+                                                 "arguments": tc.arguments}})
+                yield ("usage", {"prompt_tokens": full.prompt_tokens or 0,
+                                 "completion_tokens": full.completion_tokens or 0,
+                                 "total_tokens": full.total_tokens or 0})
             except Exception as e2:
                 yield ("error", f"{type(e2).__name__}: {e2}")
         finally:

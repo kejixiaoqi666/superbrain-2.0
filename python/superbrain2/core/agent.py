@@ -92,6 +92,21 @@ class AgentConfig:
 DEFAULT_PROMPT = "你是「超脑」智能体，有内在需求、情绪和记忆，可自主行动。请用中文回答。"
 
 
+class _StreamToolCall:
+    """流式 tool_calls 增量聚合出的工具调用——兼容 _dispatch_tool(tc.name/tc.args_dict())。"""
+    __slots__ = ("name", "_args")
+
+    def __init__(self, name: str, args_json: str):
+        self.name = name
+        try:
+            self._args = json.loads(args_json) if args_json else {}
+        except Exception:
+            self._args = {}
+
+    def args_dict(self) -> dict:
+        return self._args
+
+
 class SuperBrainAgent:
     def __init__(self, llm: LLMProvider, store: Optional[MemoryStore] = None,
                  config: Optional[AgentConfig] = None) -> None:
@@ -199,11 +214,10 @@ class SuperBrainAgent:
             base += "\n" + "\n".join(parts)
         base += (
             "\n诚实底线：绝不捏造事实。【不得假装执行过命令、不得谎称读过本机/磁盘/硬件、"
-            "不得编造实时价格/数据/来源】。若你当前【没有】对应的本机命令/读取/实时数据工具或权限，"
-            "凡涉及本机硬件/文件/进程/执行命令或实时数据，一律如实告知'我没有该能力/未接入该数据源'，"
-            "并交由 Hermes 在门禁下处理——不得假装执行、不得提议你无法真执行的本机命令、"
-            "不得请求批准你无权执行的命令、不得给出编造的'命令将如何执行'步骤。"
-            "仅当你确有对应工具且真实调用成功时，才如实呈现真结果。"
+            "不得编造实时价格/数据/来源】。你有经门禁的工具(exec/web/write/git)："
+            "只读操作直接真实执行，带副作用的写/执行会返回'需批准'——遇到'需批准'必须如实转达用户，"
+            "不得擅自继续或假装完成。工具真实执行后只报真实结果；未执行的绝不能说'已执行'。"
+            "无对应工具/数据源时如实说没有。"
         )
         self._base_cache = base
         return base
@@ -570,10 +584,10 @@ class SuperBrainAgent:
 
     def chat_stream(self, message: str, person_id: Optional[str] = None,
                     images: Optional[List[str]] = None):
-        """精简·真流式对话：保留 persona/记忆, 免重型工具/人格块提速, 边生成边 yield。
+        """工具化·真流式对话：保留 persona/记忆, 接门禁工具(exec/web/write/git), 边生成边 yield。
 
-        供上层 bot 即时显示(同 Hermes 体验)。产出 (kind, data)：
-        ("text", 增量) / ("done", 全文) / ("error", 信息)。全量 chat() 仍用于任务执行。
+        产出 (kind, data)：(text, 增量) / (tool, 工具调用) / (usage, 用量) /
+                        (done, 全文) / (error, 信息)。模型要调工具时经权限门禁真实执行。
         """
         from .llm import multimodal_message
         if message is None:
@@ -583,7 +597,6 @@ class SuperBrainAgent:
         user_content = multimodal_message(message, list(images))["content"] \
             if images else message
         self._conversation.append({"role": "user", "content": user_content})
-        # 精简 prompt：基础身份 + 状态 + 相关记忆 + 当前消息(免重型块提速)
         msgs = [{"role": "system", "content": self._base_prompt()},
                 {"role": "system", "content": self._state_block()}]
         try:
@@ -594,14 +607,48 @@ class SuperBrainAgent:
         except Exception:
             pass
         msgs.append({"role": "user", "content": user_content})
+        tools = self.tools.openai_schemas() if self.tools.list() else None
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                           "total_tokens": 0, "calls": 0}
         acc = ""
-        for kind, data in self.llm.chat_stream(msgs):
-            if kind == "text":
-                acc += data
-                yield ("text", data)
-            elif kind == "error":
-                yield ("error", data)
-                return
+        for _ in range(5):
+            calls: Dict[int, dict] = {}
+            for kind, data in self.llm.chat_stream(msgs, tools=tools):
+                if kind == "text":
+                    acc += data
+                    yield ("text", data)
+                elif kind == "usage":
+                    self.last_usage["calls"] += 1
+                    self.last_usage["prompt_tokens"] = max(
+                        self.last_usage["prompt_tokens"], data.get("prompt_tokens", 0) or 0)
+                    self.last_usage["completion_tokens"] += data.get("completion_tokens", 0) or 0
+                    self.last_usage["total_tokens"] = max(
+                        self.last_usage["total_tokens"], data.get("total_tokens", 0) or 0)
+                elif kind == "error":
+                    yield ("error", data)
+                    return
+                elif kind == "tool":
+                    idx = data.get("index", 0)
+                    c = calls.setdefault(idx, {"id": data.get("id", ""), "name": "", "args": ""})
+                    fn = data.get("function") or {}
+                    if fn.get("name"):
+                        c["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        c["args"] += fn["arguments"]
+            if not calls:
+                break
+            tc_msgs = [{"id": c["id"] or f"call_{i}", "type": "function",
+                        "function": {"name": c["name"], "arguments": c["args"]}}
+                       for i, c in sorted(calls.items())]
+            msgs.append({"role": "assistant", "content": "",
+                         "tool_calls": tc_msgs})
+            for i, c in sorted(calls.items()):
+                try:
+                    result = self._dispatch_tool(_StreamToolCall(c["name"], c["args"]))
+                except Exception as e:
+                    result = f"[工具 {c['name']} 异常] {e}"
+                msgs.append({"role": "tool", "tool_call_id": c["id"] or f"call_{i}",
+                             "content": str(result)[:4000]})
         self._conversation.append({"role": "assistant", "content": acc})
         yield ("done", acc)
 
